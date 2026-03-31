@@ -5,6 +5,7 @@ if (!defined('ABSPATH')) {
 
 final class MP_Robokassa_Receipt2_Admin {
 	private const PAGE_SLUG = 'mp-robokassa-receipt2';
+	private const NONCE_ACTION_API_CHECK = 'mp_rb_receipt2_api_check';
 
 	public static function init(): void {
 		add_action('admin_menu', [self::class, 'register_menu']);
@@ -186,6 +187,15 @@ final class MP_Robokassa_Receipt2_Admin {
 			wp_die('Access denied');
 		}
 
+		$api_check_result = null;
+		if (isset($_POST['mp_rb_receipt2_api_check'])) {
+			check_admin_referer(self::NONCE_ACTION_API_CHECK);
+			$api_check_result = self::run_api_diagnostic();
+		}
+
+		$inspect_order_id = isset($_GET['mp_rb_receipt2_inspect_order']) ? (int) $_GET['mp_rb_receipt2_inspect_order'] : 0;
+		$inspect_result = $inspect_order_id > 0 ? self::inspect_order($inspect_order_id) : null;
+
 		$enabled = MP_Robokassa_Receipt2_Settings::is_enabled();
 		$sandbox = MP_Robokassa_Receipt2_Settings::is_sandbox();
 		$login = MP_Robokassa_Receipt2_Settings::get_login();
@@ -195,6 +205,9 @@ final class MP_Robokassa_Receipt2_Admin {
 		$default_subject = MP_Robokassa_Receipt2_Settings::get_default_payment_subject();
 		$rules = MP_Robokassa_Receipt2_Settings::get_rules();
 		$errors = MP_Robokassa_Receipt2_Settings::validate_for_api();
+		$preflight = self::build_preflight_checks($rules, $errors);
+		$readiness_ok = empty($preflight['warnings']);
+		$log_tail = self::read_log_tail(40);
 
 		$categories = get_terms([
 			'taxonomy' => 'product_cat',
@@ -219,6 +232,56 @@ final class MP_Robokassa_Receipt2_Admin {
 					</ul>
 				</div>
 			<?php endif; ?>
+
+			<div style="margin-top:12px;background:#fff;border:1px solid #ccd0d4;padding:16px;max-width:1300px;">
+				<h2>Диагностика API</h2>
+				<p>Проверка доступности RoboFiscal endpoint и сетевого соединения сервера.</p>
+				<form method="post">
+					<?php wp_nonce_field(self::NONCE_ACTION_API_CHECK); ?>
+					<input type="hidden" name="mp_rb_receipt2_api_check" value="1">
+					<?php submit_button('Проверить API', 'secondary', 'submit', false); ?>
+				</form>
+				<?php if (is_array($api_check_result)) : ?>
+					<div style="margin-top:10px;padding:10px;border-left:4px solid <?php echo !empty($api_check_result['ok']) ? '#46b450' : '#dc3232'; ?>;background:#f8f8f8;">
+						<strong><?php echo !empty($api_check_result['ok']) ? 'API доступен' : 'API недоступен'; ?></strong>
+						<div>HTTP: <?php echo esc_html((string) $api_check_result['status_code']); ?></div>
+						<div><?php echo esc_html((string) $api_check_result['message']); ?></div>
+					</div>
+				<?php endif; ?>
+			</div>
+
+			<div style="margin-top:12px;background:#fff;border:1px solid #ccd0d4;padding:16px;max-width:1300px;">
+				<h2>Preflight-проверка перед выкладкой</h2>
+				<?php if (!empty($preflight['warnings'])) : ?>
+					<ul style="margin:0 0 0 18px;">
+						<?php foreach ($preflight['warnings'] as $warning) : ?>
+							<li style="color:#b32d2e;"><?php echo esc_html($warning); ?></li>
+						<?php endforeach; ?>
+					</ul>
+				<?php else : ?>
+					<p style="color:#22863a;margin:0;">Критичных предупреждений нет.</p>
+				<?php endif; ?>
+			</div>
+
+			<div style="margin-top:12px;background:#fff;border:1px solid #ccd0d4;padding:16px;max-width:1300px;">
+				<h2>Готовность к загрузке</h2>
+				<p style="margin:0;">
+					<strong>Статус: </strong>
+					<span style="color:<?php echo $readiness_ok ? '#22863a' : '#b32d2e'; ?>;">
+						<?php echo $readiness_ok ? 'PASS' : 'WARN'; ?>
+					</span>
+				</p>
+				<ul style="margin:8px 0 0 18px;">
+					<?php foreach ($preflight['checks'] as $check) : ?>
+						<li>
+							<span style="color:<?php echo !empty($check['ok']) ? '#22863a' : '#b32d2e'; ?>;">
+								<?php echo !empty($check['ok']) ? 'PASS' : 'WARN'; ?>
+							</span>
+							- <?php echo esc_html((string) $check['label']); ?>
+						</li>
+					<?php endforeach; ?>
+				</ul>
+			</div>
 
 			<form method="post" action="options.php">
 				<?php settings_fields('mp_rb_receipt2'); ?>
@@ -329,6 +392,32 @@ final class MP_Robokassa_Receipt2_Admin {
 					<?php submit_button('Сохранить настройки'); ?>
 				</div>
 			</form>
+
+			<div style="margin-top:12px;background:#fff;border:1px solid #ccd0d4;padding:16px;max-width:1300px;">
+				<h2>Инспектор заказа</h2>
+				<form method="get">
+					<input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>">
+					<label for="mp-rb-receipt2-inspect-order">Order ID: </label>
+					<input id="mp-rb-receipt2-inspect-order" type="number" name="mp_rb_receipt2_inspect_order" value="<?php echo $inspect_order_id > 0 ? esc_attr((string) $inspect_order_id) : ''; ?>" min="1">
+					<?php submit_button('Проверить заказ', 'secondary', 'submit', false); ?>
+				</form>
+
+				<?php if (is_array($inspect_result)) : ?>
+					<?php if (empty($inspect_result['order_found'])) : ?>
+						<p style="color:#b32d2e;">Заказ не найден.</p>
+					<?php else : ?>
+						<p><strong>Order #<?php echo esc_html((string) $inspect_result['order_id']); ?></strong></p>
+						<p><strong>Resolve:</strong> <?php echo esc_html(wp_json_encode($inspect_result['resolved'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)); ?></p>
+						<p><strong>Build:</strong> <?php echo esc_html(wp_json_encode($inspect_result['built'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)); ?></p>
+						<p><strong>Meta:</strong> <?php echo esc_html(wp_json_encode($inspect_result['meta'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)); ?></p>
+					<?php endif; ?>
+				<?php endif; ?>
+			</div>
+
+			<div style="margin-top:12px;background:#fff;border:1px solid #ccd0d4;padding:16px;max-width:1300px;">
+				<h2>Последние строки лога</h2>
+				<pre style="max-height:280px;overflow:auto;background:#111;color:#ddd;padding:10px;"><?php echo esc_html($log_tail); ?></pre>
+			</div>
 		</div>
 
 		<script>
@@ -374,6 +463,155 @@ final class MP_Robokassa_Receipt2_Admin {
 		})();
 		</script>
 		<?php
+	}
+
+	/**
+	 * @return array{ok:bool,status_code:int,message:string}
+	 */
+	private static function run_api_diagnostic(): array {
+		$url = 'https://ws.roboxchange.com/RoboFiscal/Receipt/Attach';
+		$response = wp_remote_post($url, [
+			'timeout' => 10,
+			'headers' => ['Content-Type' => 'application/json'],
+			'body' => '{}',
+		]);
+		if (is_wp_error($response)) {
+			return [
+				'ok' => false,
+				'status_code' => 0,
+				'message' => 'WP_Error: ' . $response->get_error_message(),
+			];
+		}
+		$status_code = (int) wp_remote_retrieve_response_code($response);
+		$ok = $status_code > 0;
+		$msg = $ok ? 'Endpoint reachable (even if request body is invalid).' : 'Unexpected empty HTTP status';
+		return [
+			'ok' => $ok,
+			'status_code' => $status_code,
+			'message' => $msg,
+		];
+	}
+
+	/**
+	 * @param array<int,array<string,mixed>> $rules
+	 * @param array<int,string> $errors
+	 * @return array{
+	 *   checks:array<int,array{label:string,ok:bool}>,
+	 *   warnings:array<int,string>
+	 * }
+	 */
+	private static function build_preflight_checks(array $rules, array $errors): array {
+		$checks = [];
+		$warnings = [];
+
+		$checks[] = [
+			'label' => 'Плагин включен',
+			'ok' => MP_Robokassa_Receipt2_Settings::is_enabled(),
+		];
+		$checks[] = [
+			'label' => 'Заполнены credentials (login/password1)',
+			'ok' => MP_Robokassa_Receipt2_Settings::get_login() !== '' && MP_Robokassa_Receipt2_Settings::get_password1() !== '',
+		];
+		$checks[] = [
+			'label' => 'Есть минимум одно активное правило по категориям',
+			'ok' => self::has_enabled_rules($rules),
+		];
+		$checks[] = [
+			'label' => 'Доступна запись в uploads для логов',
+			'ok' => self::is_log_dir_writable(),
+		];
+		$checks[] = [
+			'label' => 'Нет базовых ошибок validate_for_api',
+			'ok' => empty($errors),
+		];
+
+		foreach ($checks as $check) {
+			if (empty($check['ok'])) {
+				$warnings[] = (string) $check['label'];
+			}
+		}
+		return [
+			'checks' => $checks,
+			'warnings' => $warnings,
+		];
+	}
+
+	/**
+	 * @param int $order_id
+	 * @return array<string,mixed>
+	 */
+	private static function inspect_order(int $order_id): array {
+		$order = wc_get_order($order_id);
+		if (!$order instanceof WC_Order) {
+			return [
+				'order_found' => false,
+				'order_id' => $order_id,
+			];
+		}
+
+		$resolved = MP_Robokassa_Receipt2_OrderLinks::resolve_for_order($order);
+		$built = MP_Robokassa_Receipt2_ReceiptBuilder::build($order, (float) $resolved['settlement_amount']);
+
+		return [
+			'order_found' => true,
+			'order_id' => $order_id,
+			'resolved' => $resolved,
+			'built' => [
+				'items_count' => is_array($built['items']) ? count($built['items']) : 0,
+				'settlements' => $built['settlements'],
+				'total_items_amount' => $built['total_items_amount'],
+				'warnings' => $built['warnings'],
+			],
+			'meta' => [
+				'sent' => get_post_meta($order_id, 'mp_rb_receipt2_sent', true),
+				'receipt_id' => get_post_meta($order_id, 'mp_rb_receipt2_id', true),
+				'request_id' => get_post_meta($order_id, 'mp_rb_receipt2_request_id', true),
+				'error' => get_post_meta($order_id, 'mp_rb_receipt2_error', true),
+				'source_id' => get_post_meta($order_id, 'mp_rb_receipt2_source_id', true),
+				'settlement_amount' => get_post_meta($order_id, 'mp_rb_receipt2_settlement_amount', true),
+			],
+		];
+	}
+
+	private static function has_enabled_rules(array $rules): bool {
+		foreach ($rules as $rule) {
+			if (!empty($rule['enabled'])) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static function is_log_dir_writable(): bool {
+		$uploads = wp_upload_dir();
+		$base = is_array($uploads) && !empty($uploads['basedir']) ? $uploads['basedir'] : WP_CONTENT_DIR . '/uploads';
+		$dir = rtrim($base, '/\\') . DIRECTORY_SEPARATOR . 'mp-robokassa-receipt2';
+		if (!is_dir($dir)) {
+			if (function_exists('wp_mkdir_p')) {
+				wp_mkdir_p($dir);
+			}
+		}
+		return is_dir($dir) && is_writable($dir);
+	}
+
+	private static function read_log_tail(int $lines = 40): string {
+		$uploads = wp_upload_dir();
+		$base = is_array($uploads) && !empty($uploads['basedir']) ? $uploads['basedir'] : WP_CONTENT_DIR . '/uploads';
+		$dir = rtrim($base, '/\\') . DIRECTORY_SEPARATOR . 'mp-robokassa-receipt2';
+		$path = $dir . DIRECTORY_SEPARATOR . 'receipt2-' . date('Y-m') . '.log';
+		if (!is_file($path) || !is_readable($path)) {
+			return 'Лог-файл не найден или недоступен.';
+		}
+		$content = (string) @file_get_contents($path);
+		if ($content === '') {
+			return 'Лог пуст.';
+		}
+		$all_lines = preg_split("/\r\n|\n|\r/", trim($content));
+		if (!is_array($all_lines) || empty($all_lines)) {
+			return 'Лог пуст.';
+		}
+		$tail = array_slice($all_lines, -1 * max(1, $lines));
+		return implode("\n", $tail);
 	}
 }
 
