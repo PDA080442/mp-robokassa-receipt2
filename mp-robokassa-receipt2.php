@@ -41,6 +41,10 @@ final class MP_Robokassa_Receipt2_Plugin {
 		if (!class_exists('MP_Robokassa_Receipt2_ReceiptBuilder')) {
 			require_once __DIR__ . '/includes/class-mp-robokassa-receipt2-receipt-builder.php';
 		}
+		if (is_admin() && !class_exists('MP_Robokassa_Receipt2_Admin')) {
+			require_once __DIR__ . '/admin/class-mp-robokassa-receipt2-admin.php';
+			MP_Robokassa_Receipt2_Admin::init();
+		}
 	}
 
 	private static function register_hooks(): void {
