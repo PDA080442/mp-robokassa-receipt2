@@ -38,6 +38,9 @@ final class MP_Robokassa_Receipt2_Plugin {
 		if (!class_exists('MP_Robokassa_Receipt2_OrderLinks')) {
 			require_once __DIR__ . '/includes/class-mp-robokassa-receipt2-order-links.php';
 		}
+		if (!class_exists('MP_Robokassa_Receipt2_ReceiptBuilder')) {
+			require_once __DIR__ . '/includes/class-mp-robokassa-receipt2-receipt-builder.php';
+		}
 	}
 
 	private static function register_hooks(): void {
@@ -62,7 +65,16 @@ final class MP_Robokassa_Receipt2_Plugin {
 
 		$resolved = MP_Robokassa_Receipt2_OrderLinks::resolve_for_order($order);
 		$status = (!empty($resolved['is_gift_card_settlement']) && !empty($resolved['source_id'])) ? 'ok' : 'skip';
-		MP_Robokassa_Receipt2_Logger::log('INFO', $order_id, 'order_completed_hook_fired', $status, $resolved);
+		$context = $resolved;
+
+		if (!empty($resolved['is_gift_card_settlement'])) {
+			$built = MP_Robokassa_Receipt2_ReceiptBuilder::build($order, (float) $resolved['settlement_amount']);
+			$context['preview_items_count'] = is_array($built['items']) ? count($built['items']) : 0;
+			$context['preview_total_items_amount'] = $built['total_items_amount'];
+			$context['preview_warnings'] = $built['warnings'];
+		}
+
+		MP_Robokassa_Receipt2_Logger::log('INFO', $order_id, 'order_completed_hook_fired', $status, $context);
 	}
 }
 
