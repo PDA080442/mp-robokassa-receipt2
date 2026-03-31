@@ -63,18 +63,115 @@ final class MP_Robokassa_Receipt2_Plugin {
 			return;
 		}
 
-		$resolved = MP_Robokassa_Receipt2_OrderLinks::resolve_for_order($order);
-		$status = (!empty($resolved['is_gift_card_settlement']) && !empty($resolved['source_id'])) ? 'ok' : 'skip';
-		$context = $resolved;
+		self::process_order($order, false);
+	}
 
-		if (!empty($resolved['is_gift_card_settlement'])) {
-			$built = MP_Robokassa_Receipt2_ReceiptBuilder::build($order, (float) $resolved['settlement_amount']);
-			$context['preview_items_count'] = is_array($built['items']) ? count($built['items']) : 0;
-			$context['preview_total_items_amount'] = $built['total_items_amount'];
-			$context['preview_warnings'] = $built['warnings'];
+	/**
+	 * Unified processing flow for automatic and manual execution.
+	 *
+	 * @param WC_Order $order
+	 * @param bool $manual_retry
+	 * @return void
+	 */
+	private static function process_order(WC_Order $order, bool $manual_retry): void {
+		$order_id = (int) $order->get_id();
+
+		$already_sent = get_post_meta($order_id, 'mp_rb_receipt2_sent', true);
+		if ($already_sent === 'yes' && !$manual_retry) {
+			MP_Robokassa_Receipt2_Logger::log('INFO', $order_id, 'process_order_skip_already_sent', 'skip', []);
+			return;
 		}
 
-		MP_Robokassa_Receipt2_Logger::log('INFO', $order_id, 'order_completed_hook_fired', $status, $context);
+		$settings_errors = MP_Robokassa_Receipt2_Settings::validate_for_api();
+		if (!empty($settings_errors)) {
+			update_post_meta($order_id, 'mp_rb_receipt2_error', implode('; ', $settings_errors));
+			MP_Robokassa_Receipt2_Logger::log('ERROR', $order_id, 'process_order_settings_invalid', 'error', [
+				'errors' => $settings_errors,
+				'manual_retry' => $manual_retry,
+			]);
+			return;
+		}
+
+		$resolved = MP_Robokassa_Receipt2_OrderLinks::resolve_for_order($order);
+		if (empty($resolved['is_gift_card_settlement'])) {
+			MP_Robokassa_Receipt2_Logger::log('INFO', $order_id, 'process_order_skip_not_settlement', 'skip', [
+				'reason' => $resolved['reason'],
+				'manual_retry' => $manual_retry,
+			]);
+			return;
+		}
+
+		if (empty($resolved['source_id'])) {
+			update_post_meta($order_id, 'mp_rb_receipt2_error', 'Missing source_id');
+			MP_Robokassa_Receipt2_Logger::log('ERROR', $order_id, 'process_order_missing_source_id', 'error', [
+				'reason' => $resolved['reason'],
+				'settlement_amount' => $resolved['settlement_amount'],
+				'manual_retry' => $manual_retry,
+			]);
+			return;
+		}
+
+		$receipt_data = MP_Robokassa_Receipt2_ReceiptBuilder::build($order, (float) $resolved['settlement_amount']);
+		$items_count = is_array($receipt_data['items']) ? count($receipt_data['items']) : 0;
+		if ($items_count < 1) {
+			update_post_meta($order_id, 'mp_rb_receipt2_error', 'Empty receipt items');
+			MP_Robokassa_Receipt2_Logger::log('ERROR', $order_id, 'process_order_empty_items', 'error', [
+				'warnings' => $receipt_data['warnings'],
+				'manual_retry' => $manual_retry,
+			]);
+			return;
+		}
+
+		$fields = self::build_api_fields($order, $resolved, $receipt_data);
+		$api_result = MP_Robokassa_Receipt2_ApiClient::send_second_receipt($fields, $order_id);
+
+		if (!empty($api_result['ok'])) {
+			update_post_meta($order_id, 'mp_rb_receipt2_sent', 'yes');
+			update_post_meta($order_id, 'mp_rb_receipt2_id', (string) $api_result['receipt_id']);
+			update_post_meta($order_id, 'mp_rb_receipt2_request_id', (string) $api_result['request_id']);
+			delete_post_meta($order_id, 'mp_rb_receipt2_error');
+			MP_Robokassa_Receipt2_Logger::log('INFO', $order_id, 'process_order_send_success', 'ok', [
+				'receipt_id' => $api_result['receipt_id'],
+				'request_id' => $api_result['request_id'],
+				'status_code' => $api_result['status_code'],
+				'items_count' => $items_count,
+				'settlement_amount' => $resolved['settlement_amount'],
+				'manual_retry' => $manual_retry,
+			]);
+			return;
+		}
+
+		$error_message = is_string($api_result['error']) && $api_result['error'] !== '' ? $api_result['error'] : 'Unknown API error';
+		update_post_meta($order_id, 'mp_rb_receipt2_error', $error_message);
+		update_post_meta($order_id, 'mp_rb_receipt2_request_id', (string) $api_result['request_id']);
+		MP_Robokassa_Receipt2_Logger::log('ERROR', $order_id, 'process_order_send_failed', 'error', [
+			'error' => $error_message,
+			'request_id' => $api_result['request_id'],
+			'status_code' => $api_result['status_code'],
+			'response' => $api_result['response'],
+			'manual_retry' => $manual_retry,
+		]);
+	}
+
+	/**
+	 * Build API fields payload for RoboFiscal attach.
+	 *
+	 * @param WC_Order $order
+	 * @param array<string,mixed> $resolved
+	 * @param array<string,mixed> $receipt_data
+	 * @return array<string,mixed>
+	 */
+	private static function build_api_fields(WC_Order $order, array $resolved, array $receipt_data): array {
+		return [
+			'MerchantLogin' => MP_Robokassa_Receipt2_Settings::get_login(),
+			'InvoiceID' => (int) $order->get_id(),
+			'SourceInvoiceId' => (string) $resolved['source_id'],
+			'OutSum' => (string) wc_format_decimal((float) $resolved['settlement_amount'], wc_get_price_decimals()),
+			'Receipt' => [
+				'items' => isset($receipt_data['items']) && is_array($receipt_data['items']) ? $receipt_data['items'] : [],
+				'settlements' => isset($receipt_data['settlements']) && is_array($receipt_data['settlements']) ? $receipt_data['settlements'] : [],
+			],
+		];
 	}
 }
 
