@@ -35,6 +35,9 @@ final class MP_Robokassa_Receipt2_Plugin {
 		if (!class_exists('MP_Robokassa_Receipt2_ApiClient')) {
 			require_once __DIR__ . '/includes/class-mp-robokassa-receipt2-api-client.php';
 		}
+		if (!class_exists('MP_Robokassa_Receipt2_OrderLinks')) {
+			require_once __DIR__ . '/includes/class-mp-robokassa-receipt2-order-links.php';
+		}
 	}
 
 	private static function register_hooks(): void {
@@ -48,7 +51,18 @@ final class MP_Robokassa_Receipt2_Plugin {
 	 * @return void
 	 */
 	public static function on_order_completed($order_id): void {
-		MP_Robokassa_Receipt2_Logger::log('INFO', (int) $order_id, 'order_completed_hook_fired', 'ok', []);
+		$order_id = (int) $order_id;
+		$order = function_exists('wc_get_order') ? wc_get_order($order_id) : null;
+		if (!$order instanceof WC_Order) {
+			MP_Robokassa_Receipt2_Logger::log('ERROR', $order_id, 'order_completed_hook_fired', 'error', [
+				'reason' => 'order_not_found',
+			]);
+			return;
+		}
+
+		$resolved = MP_Robokassa_Receipt2_OrderLinks::resolve_for_order($order);
+		$status = (!empty($resolved['is_gift_card_settlement']) && !empty($resolved['source_id'])) ? 'ok' : 'skip';
+		MP_Robokassa_Receipt2_Logger::log('INFO', $order_id, 'order_completed_hook_fired', $status, $resolved);
 	}
 }
 
