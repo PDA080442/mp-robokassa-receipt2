@@ -45,6 +45,8 @@ final class MP_Robokassa_Receipt2_Plugin {
 
 	private static function register_hooks(): void {
 		add_action('woocommerce_order_status_completed', [self::class, 'on_order_completed'], 20, 1);
+		add_filter('woocommerce_order_actions', [self::class, 'register_order_action']);
+		add_action('woocommerce_order_action_mp_rb_receipt2_resend', [self::class, 'on_manual_resend_order_action']);
 	}
 
 	/**
@@ -64,6 +66,37 @@ final class MP_Robokassa_Receipt2_Plugin {
 		}
 
 		self::process_order($order, false);
+	}
+
+	/**
+	 * Add manual resend action into Woo order actions dropdown.
+	 *
+	 * @param array<string,string> $actions
+	 * @return array<string,string>
+	 */
+	public static function register_order_action($actions): array {
+		if (!is_array($actions)) {
+			$actions = [];
+		}
+		$actions['mp_rb_receipt2_resend'] = 'Отправить второй чек Robokassa повторно';
+		return $actions;
+	}
+
+	/**
+	 * Manual retry handler from Woo order action.
+	 *
+	 * @param WC_Order $order
+	 * @return void
+	 */
+	public static function on_manual_resend_order_action($order): void {
+		if (!$order instanceof WC_Order) {
+			return;
+		}
+		$order_id = (int) $order->get_id();
+
+		// Manual retry is explicit; allow re-send by clearing success marker.
+		delete_post_meta($order_id, 'mp_rb_receipt2_sent');
+		self::process_order($order, true);
 	}
 
 	/**
@@ -138,6 +171,9 @@ final class MP_Robokassa_Receipt2_Plugin {
 				'settlement_amount' => $resolved['settlement_amount'],
 				'manual_retry' => $manual_retry,
 			]);
+			if ($manual_retry) {
+				$order->add_order_note('Второй чек Robokassa отправлен вручную успешно.');
+			}
 			return;
 		}
 
@@ -151,6 +187,9 @@ final class MP_Robokassa_Receipt2_Plugin {
 			'response' => $api_result['response'],
 			'manual_retry' => $manual_retry,
 		]);
+		if ($manual_retry) {
+			$order->add_order_note('Ошибка ручной отправки второго чека Robokassa: ' . $error_message);
+		}
 	}
 
 	/**
