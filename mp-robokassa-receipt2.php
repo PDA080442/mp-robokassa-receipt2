@@ -22,7 +22,9 @@ final class MP_Robokassa_Receipt2_Plugin {
 	}
 
 	private static function load_dependencies(): void {
-		// Step 1 skeleton: dependencies will be connected in the next sections.
+		if (!class_exists('MP_Robokassa_Receipt2_Settings')) {
+			require_once __DIR__ . '/includes/class-mp-robokassa-receipt2-settings.php';
+		}
 	}
 
 	private static function register_hooks(): void {
