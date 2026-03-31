@@ -48,6 +48,25 @@ final class MP_Robokassa_Receipt2_Settings {
 		return trim((string) get_option(self::OPTION_PASSWORD1, ''));
 	}
 
+	/**
+	 * Expected transaction/reference meta keys used by official Robokassa plugin
+	 * and common WooCommerce gateways.
+	 *
+	 * @return array<int,string>
+	 */
+	public static function get_source_meta_keys(): array {
+		return [
+			'_transaction_id',
+			'transaction_id',
+			'robokassa_invoice_id',
+			'robokassa_payment_id',
+			'robokassa_transaction_id',
+			'robokassa_reference',
+			'rbk_payment_id',
+			'payment_id',
+		];
+	}
+
 	public static function allowed_payment_modes(): array {
 		return [
 			'full_payment',

@@ -73,6 +73,24 @@ final class MP_Robokassa_Receipt2_OrderLinks {
 			$result['reason'] = $result['reason'] !== '' ? $result['reason'] : 'source_from_meta';
 		}
 
+		// Fallback by known official-plugin/woocommerce meta keys on current order.
+		if ($result['source_id'] === '') {
+			$source_id = self::resolve_source_id_from_order_meta($order_id);
+			if ($source_id !== '') {
+				$result['source_id'] = $source_id;
+				$result['reason'] = 'source_resolved_from_order_meta_keys';
+			}
+		}
+
+		// Fallback by transaction id on current order.
+		if ($result['source_id'] === '') {
+			$source_id = trim((string) $order->get_transaction_id());
+			if ($source_id !== '') {
+				$result['source_id'] = $source_id;
+				$result['reason'] = 'source_resolved_from_current_order_transaction_id';
+			}
+		}
+
 		// Try by card number -> issuance order -> transaction id.
 		if ($result['source_id'] === '' && !empty($result['card_numbers'])) {
 			$by_cards = self::resolve_source_ids_by_card_numbers($result['card_numbers']);
@@ -178,7 +196,7 @@ final class MP_Robokassa_Receipt2_OrderLinks {
 
 			$candidate = trim((string) $issuance_order->get_transaction_id());
 			if ($candidate === '') {
-				$candidate = trim((string) get_post_meta($issuance_order_id, '_transaction_id', true));
+				$candidate = self::resolve_source_id_from_order_meta($issuance_order_id);
 			}
 			if ($candidate !== '') {
 				$source_ids[] = $candidate;
@@ -194,6 +212,23 @@ final class MP_Robokassa_Receipt2_OrderLinks {
 			return ['ok' => false, 'source_id' => '', 'reason' => 'ambiguous_multiple_source_ids'];
 		}
 		return ['ok' => false, 'source_id' => '', 'reason' => 'source_id_not_found_by_card_number'];
+	}
+
+	/**
+	 * Resolve transaction/reference from known meta key list.
+	 *
+	 * @param int $order_id
+	 * @return string
+	 */
+	private static function resolve_source_id_from_order_meta(int $order_id): string {
+		$keys = MP_Robokassa_Receipt2_Settings::get_source_meta_keys();
+		foreach ($keys as $key) {
+			$value = trim((string) get_post_meta($order_id, (string) $key, true));
+			if ($value !== '') {
+				return $value;
+			}
+		}
+		return '';
 	}
 }
 

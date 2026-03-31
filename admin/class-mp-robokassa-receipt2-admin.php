@@ -6,6 +6,7 @@ if (!defined('ABSPATH')) {
 final class MP_Robokassa_Receipt2_Admin {
 	private const PAGE_SLUG = 'mp-robokassa-receipt2';
 	private const NONCE_ACTION_API_CHECK = 'mp_rb_receipt2_api_check';
+	private const NONCE_ACTION_ORDER_INSPECT = 'mp_rb_receipt2_order_inspect';
 
 	public static function init(): void {
 		add_action('admin_menu', [self::class, 'register_menu']);
@@ -41,7 +42,7 @@ final class MP_Robokassa_Receipt2_Admin {
 		]);
 		register_setting('mp_rb_receipt2', MP_Robokassa_Receipt2_Settings::OPTION_PASSWORD1, [
 			'type' => 'string',
-			'sanitize_callback' => [self::class, 'sanitize_string'],
+			'sanitize_callback' => [self::class, 'sanitize_password1'],
 			'default' => '',
 		]);
 		register_setting('mp_rb_receipt2', MP_Robokassa_Receipt2_Settings::OPTION_DEBUG, [
@@ -72,6 +73,15 @@ final class MP_Robokassa_Receipt2_Admin {
 
 	public static function sanitize_string($value): string {
 		return trim((string) $value);
+	}
+
+	public static function sanitize_password1($value): string {
+		$value = trim((string) $value);
+		if ($value === '') {
+			$existing = trim((string) get_option(MP_Robokassa_Receipt2_Settings::OPTION_PASSWORD1, ''));
+			return $existing;
+		}
+		return $value;
 	}
 
 	public static function sanitize_payment_mode($value): string {
@@ -193,7 +203,11 @@ final class MP_Robokassa_Receipt2_Admin {
 			$api_check_result = self::run_api_diagnostic();
 		}
 
-		$inspect_order_id = isset($_GET['mp_rb_receipt2_inspect_order']) ? (int) $_GET['mp_rb_receipt2_inspect_order'] : 0;
+		$inspect_order_id = 0;
+		if (isset($_POST['mp_rb_receipt2_inspect_submit'])) {
+			check_admin_referer(self::NONCE_ACTION_ORDER_INSPECT);
+			$inspect_order_id = isset($_POST['mp_rb_receipt2_inspect_order']) ? (int) $_POST['mp_rb_receipt2_inspect_order'] : 0;
+		}
 		$inspect_result = $inspect_order_id > 0 ? self::inspect_order($inspect_order_id) : null;
 
 		$enabled = MP_Robokassa_Receipt2_Settings::is_enabled();
@@ -303,7 +317,9 @@ final class MP_Robokassa_Receipt2_Admin {
 						</tr>
 						<tr>
 							<th scope="row">Password1</th>
-							<td><input class="regular-text" type="password" name="<?php echo esc_attr(MP_Robokassa_Receipt2_Settings::OPTION_PASSWORD1); ?>" value="<?php echo esc_attr($password1); ?>"></td>
+							<td>
+								<input class="regular-text" type="password" name="<?php echo esc_attr(MP_Robokassa_Receipt2_Settings::OPTION_PASSWORD1); ?>" value="" placeholder="<?php echo $password1 !== '' ? 'Сохранен (оставьте пустым, чтобы не менять)' : 'Введите Password1'; ?>">
+							</td>
 						</tr>
 						<tr>
 							<th scope="row">Debug</th>
@@ -395,11 +411,11 @@ final class MP_Robokassa_Receipt2_Admin {
 
 			<div style="margin-top:12px;background:#fff;border:1px solid #ccd0d4;padding:16px;max-width:1300px;">
 				<h2>Инспектор заказа</h2>
-				<form method="get">
-					<input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>">
+				<form method="post">
+					<?php wp_nonce_field(self::NONCE_ACTION_ORDER_INSPECT); ?>
 					<label for="mp-rb-receipt2-inspect-order">Order ID: </label>
 					<input id="mp-rb-receipt2-inspect-order" type="number" name="mp_rb_receipt2_inspect_order" value="<?php echo $inspect_order_id > 0 ? esc_attr((string) $inspect_order_id) : ''; ?>" min="1">
-					<?php submit_button('Проверить заказ', 'secondary', 'submit', false); ?>
+					<?php submit_button('Проверить заказ', 'secondary', 'mp_rb_receipt2_inspect_submit', false); ?>
 				</form>
 
 				<?php if (is_array($inspect_result)) : ?>
